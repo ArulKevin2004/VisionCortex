@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const WebSocket = require('ws');
 
 const app = express();
 app.use(cors());
@@ -110,7 +111,7 @@ app.post('/api/chat', (req, res) => {
     console.log('Calling rag_engine.py with message:', message);
 
     const scriptPath = path.resolve(backendPath, 'rag_engine.py');
-    const child = spawn(pythonPath, [scriptPath, message], { cwd: backendPath, env: pythonEnv });
+    const child = spawn(pythonPath, [scriptPath, '--query', message], { cwd: backendPath, env: pythonEnv });
 
     let output = '';
     let errorOutput = '';
@@ -140,4 +141,61 @@ app.post('/api/chat', (req, res) => {
     });
 });
 
-app.listen(5001, () => console.log('Server running on http://localhost:5001'));
+// Create HTTP server and WebSocket server
+const server = app.listen(5001, () => {
+    console.log('Server running on http://localhost:5001');
+});
+
+const wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws) => {
+    console.log('WebSocket client connected');
+
+    ws.on('message', (message) => {
+        const query = message.toString();
+        console.log('Received WebSocket message:', query);
+
+        try {
+            const scriptPath = path.resolve(backendPath, 'rag_engine.py');
+            const child = spawn(pythonPath, [scriptPath, '--query', query], { cwd: backendPath, env: pythonEnv });
+
+            let output = '';
+            let errorOutput = '';
+
+            child.stdout.on('data', (data) => {
+                output += data.toString();
+                console.log('Python output:', data.toString());
+            });
+
+            child.stderr.on('data', (data) => {
+                errorOutput += data.toString();
+                console.error('Python stderr:', data.toString());
+            });
+
+            child.on('error', (err) => {
+                console.error('Spawn error:', err);
+                ws.send(JSON.stringify({ error: 'Chat query failed: ' + err.message }));
+            });
+
+            child.on('close', (code) => {
+                if (code === 0) {
+                    ws.send(JSON.stringify({ message: output.trim() }));
+                } else {
+                    console.error('Python error:', errorOutput);
+                    ws.send(JSON.stringify({ error: `Chat query failed with code ${code}: ${errorOutput}` }));
+                }
+            });
+        } catch (error) {
+            console.error('WebSocket error:', error);
+            ws.send(JSON.stringify({ error: 'Internal server error' }));
+        }
+    });
+
+    ws.on('close', () => {
+        console.log('WebSocket client disconnected');
+    });
+
+    ws.on('error', (error) => {
+        console.error('WebSocket error:', error);
+    });
+});

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import RegisterTab from './components/RegisterTab';
 import RecognitionTab from './components/RecognitionTab';
+import ChatTab from './components/ChatTab'; // Import the new ChatTab component
 import './styles.css';
 
 const App = () => {
@@ -22,9 +23,16 @@ const App = () => {
         >
           Recognition
         </button>
+        <button
+          className={`px-4 py-2 ${activeTab === 'chat' ? 'bg-blue-500 text-white' : 'bg-gray-200'}`}
+          onClick={() => setActiveTab('chat')}
+        >
+          Chat
+        </button>
       </div>
       {activeTab === 'register' && <RegisterTab />}
       {activeTab === 'recognition' && <RecognitionTab />}
+      {activeTab === 'chat' && <ChatTab />}
     </div>
   );
 };
