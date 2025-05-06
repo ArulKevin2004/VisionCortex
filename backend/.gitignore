@@ -1,6 +1,0 @@
-.venv/
-DB/
-logs/
-
-__pycache__/
-*.pyc

@@ -1,0 +1,32 @@
+# Python (Backend)
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/*.pyd
+backend/.Python
+backend/*.egg-info/
+backend/.venv/
+backend/env/
+backend/venv/
+backend/DB/
+backend/logs/
+
+# Node.js (Backend and Root)
+node_modules/
+backend/node/node_modules/
+npm-debug.log
+
+# Frontend (React)
+frontend/node_modules/
+frontend/build/
+frontend/.env
+
+# System and IDE files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Other temporary files
+*.log
+*.cache

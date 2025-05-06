@@ -1,6 +1,7 @@
 import face_recognition
 import cv2
 import sqlite3
+import sys
 import numpy as np
 from datetime import datetime
 import logging
@@ -68,4 +69,10 @@ def register_face(name):
     conn.close()
 
 if __name__ == "__main__":
-    register_face("TestUser")
+    if len(sys.argv) != 2:
+        print("Usage: python3 register.py <name>")
+        sys.exit(1)
+
+    name = sys.argv[1]
+
+    register_face(name)
