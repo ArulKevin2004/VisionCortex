@@ -30,3 +30,5 @@ frontend/.env
 # Other temporary files
 *.log
 *.cache
+
+.env
