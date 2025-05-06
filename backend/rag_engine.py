@@ -1,48 +1,61 @@
 import sqlite3
-import numpy as np
-import faiss
-import sys
 import os
+import json
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 from langchain.docstore.document import Document
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
-from langchain.schema import BaseRetriever
-from langchain.schema import Document as LangChainDocument
+import pickle
+import asyncio
+import websockets
+import sys
+import string
+import warnings
+from transformers import logging as transformers_logging
+
+# Suppress transformers warning
+transformers_logging.set_verbosity_error()
+warnings.filterwarnings("ignore", category=FutureWarning, module="transformers.tokenization_utils_base")
 
 # Set up logging
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
-    filename=os.path.join('logs', 'rag_engine.log'),
+    filename=os.path.join(log_dir, "rag_engine.log"),
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filemode='a'
 )
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+HUGGINGFACEHUB_API_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 if not GROQ_API_KEY:
+    logger.error("GROQ_API_KEY not found in .env file")
     print("Error: GROQ_API_KEY not found in .env file")
     sys.exit(1)
+if not HUGGINGFACEHUB_API_TOKEN:
+    logger.error("HUGGINGFACEHUB_API_TOKEN not found in .env file")
+    print("Error: HUGGINGFACEHUB_API_TOKEN not found in .env file")
+    sys.exit(1)
+os.environ["HF_TOKEN"] = HUGGINGFACEHUB_API_TOKEN
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Suppress tokenizers parallelism warning
 
-# Database path
+# Database and cache paths
 DB_DIR = "DB"
+INDEX_DIR = "index"
 os.makedirs(DB_DIR, exist_ok=True)
+os.makedirs(INDEX_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, "faces.db")
-
-# Custom retriever that passes all documents to the LLM
-class AllDocumentsRetriever(BaseRetriever):
-    def __init__(self, documents):
-        super().__init__()
-        self._documents = documents
-
-    def _get_relevant_documents(self, query):
-        return self._documents
-
-    async def _aget_relevant_documents(self, query):
-        return self._documents
+INDEX_PATH = os.path.join(INDEX_DIR, "faiss_index.pkl")
+DB_TIMESTAMP_PATH = os.path.join(INDEX_DIR, "db_timestamp.pkl")
 
 # Fetch face data from SQLite
 def fetch_face_data():
@@ -52,27 +65,21 @@ def fetch_face_data():
         cursor.execute('SELECT id, name, encoding, timestamp FROM faces')
         rows = cursor.fetchall()
         conn.close()
-        logging.info(f"Fetched {len(rows)} rows from database")
+        logger.info(f"Fetched {len(rows)} rows from database")
         return rows
     except sqlite3.Error as e:
+        logger.error(f"Database error: {e}")
         print(f"Database error: {e}")
-        logging.error(f"Database error: {e}")
         return []
 
-# Convert face data to LangChain Documents and prepare embeddings
-def prepare_documents_and_embeddings(face_data):
+# Convert face data to LangChain Documents
+def prepare_documents(face_data):
     documents = []
-    embeddings = []
     for row in face_data:
         name, timestamp = row[1], row[3]
-        encoding = np.frombuffer(row[2], dtype=np.float64)
-        if encoding.shape[0] != 128:
-            logging.warning(f"Invalid encoding size for ID {row[0]}: {encoding.shape[0]}")
-            continue
-        embeddings.append(encoding)
         text = f"Person: {name}, Timestamp: {timestamp}"
         metadata = {"name": name, "timestamp": timestamp if timestamp else "Unknown", "id": row[0]}
-        documents.append(LangChainDocument(page_content=text, metadata=metadata))
+        documents.append(Document(page_content=text, metadata=metadata))
 
     # Sort documents by timestamp (newest first)
     try:
@@ -83,37 +90,83 @@ def prepare_documents_and_embeddings(face_data):
             reverse=True
         )
     except ValueError as e:
-        logging.error(f"Error sorting documents by timestamp: {e}")
+        logger.error(f"Error sorting documents by timestamp: {e}")
         print(f"Error sorting documents by timestamp: {e}")
 
-    # Log the documents for debugging
-    logging.info("Documents prepared for RAG:")
+    logger.info("Documents prepared for FAISS:")
     for doc in documents:
-        logging.info(f"Content: {doc.page_content}, Metadata: {doc.metadata}")
+        logger.info(f"Content: {doc.page_content}, Metadata: {doc.metadata}")
 
-    return documents, embeddings
+    return documents
 
-# Build FAISS index for face encodings
-def build_faiss_index(embeddings):
-    if not embeddings:
+# Check if database has changed
+def get_db_timestamp():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT MAX(timestamp) FROM faces")
+        max_timestamp = cursor.fetchone()[0]
+        conn.close()
+        return max_timestamp
+    except sqlite3.Error:
         return None
-    embeddings = np.array(embeddings, dtype=np.float32)
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings)
-    return index
 
-# Set up the RAG engine using Groq
+# Build or load FAISS index
+def build_vector_store(documents):
+    try:
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        embeddings = HuggingFaceEmbeddings(
+            model_name="multi-qa-MiniLM-L6-cos-v1",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True}
+        )
+        
+        # Check if FAISS index exists and database hasn't changed
+        current_db_timestamp = get_db_timestamp()
+        cached_timestamp = None
+        if os.path.exists(DB_TIMESTAMP_PATH):
+            with open(DB_TIMESTAMP_PATH, "rb") as f:
+                cached_timestamp = pickle.load(f)
+
+        if os.path.exists(INDEX_PATH) and current_db_timestamp == cached_timestamp:
+            logger.info("Loading cached FAISS index")
+            with open(INDEX_PATH, "rb") as f:
+                vectorstore = pickle.load(f)
+        else:
+            logger.info("Building new FAISS index")
+            vectorstore = FAISS.from_documents(documents, embedding=embeddings)
+            with open(INDEX_PATH, "wb") as f:
+                pickle.dump(vectorstore, f)
+            with open(DB_TIMESTAMP_PATH, "wb") as f:
+                pickle.dump(current_db_timestamp, f)
+        return vectorstore
+    except Exception as e:
+        logger.error(f"Error building FAISS vector store: {e}")
+        print(f" MojoException: Error building FAISS vector store: {e}")
+        sys.exit(1)
+
+# Normalize query
+def normalize_query(query):
+    # General-purpose normalization: lowercase, strip whitespace, remove punctuation
+    query = query.lower().strip()
+    # Remove punctuation except for critical characters
+    query = query.translate(str.maketrans("", "", string.punctuation.replace(":", "")))
+    # Collapse multiple spaces
+    query = " ".join(query.split())
+    return query
+
+# Set up the RAG engine
 def create_rag_engine():
     face_data = fetch_face_data()
     if not face_data:
-        logging.warning("No faces registered in database")
+        logger.warning("No faces registered in database")
         return None
 
-    documents, embeddings = prepare_documents_and_embeddings(face_data)
-    faiss_index = build_faiss_index(embeddings)  # For face encodings, not text queries
-
-    retriever = AllDocumentsRetriever(documents)
+    documents = prepare_documents(face_data)
+    vectorstore = build_vector_store(documents)
+    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})  # Increased k for broader context
 
     llm = ChatGroq(
         groq_api_key=GROQ_API_KEY,
@@ -125,13 +178,11 @@ def create_rag_engine():
     prompt = PromptTemplate(
         input_variables=["context", "question"],
         template=(
-            "You are a helpful assistant with access to a database of registered people. "
-            "The context below contains information about each person, including their name and registration timestamp in the format 'YYYY-MM-DD HH:MM:SS'. "
-            "The documents are sorted from newest to oldest by timestamp. "
-            "Answer the question based on this context, performing any necessary calculations or sorting. "
-            "For example, you can count the number of people, identify the most recent registration, extract timestamps, or list names. "
-            "If a timestamp is 'Unknown' or missing, note that it affects ordering or timing-related answers. "
-            "If the question cannot be answered due to missing information, explain why.\n\n"
+            "You are a precise assistant with access to a database of registered people. "
+            "The context contains names and registration timestamps in 'YYYY-MM-DD HH:MM:SS' format, sorted newest to oldest. "
+            "Answer the question concisely based on the context. Handle a wide range of questions, including counting registrations, identifying earliest/latest registrations, extracting timestamps, listing people, or filtering by date/name. "
+            "Interpret variations in phrasing (e.g., 'first' as 'earliest', 'last' as 'most recent'). "
+            "If a timestamp is 'Unknown', note it affects timing answers. If the question cannot be answered, say so clearly with a brief explanation.\n\n"
             "Context:\n{context}\n\n"
             "Question: {question}\n\n"
             "Answer:"
@@ -142,32 +193,80 @@ def create_rag_engine():
         llm=llm,
         chain_type="stuff",
         retriever=retriever,
+        return_source_documents=True,
         chain_type_kwargs={"prompt": prompt}
     )
     return rag_chain
 
-# Run query
+# Process query
 def process_query(query):
-    logging.info(f"Processing query: {query}")
+    start_time = datetime.now()
+    normalized_query = normalize_query(query)
+    logger.info(f"Processing query: {query} (Normalized: {normalized_query})")
     rag_engine = create_rag_engine()
     if not rag_engine:
+        logger.warning("No face data available")
         return "No face data available."
     try:
-        response = rag_engine.invoke(query)
+        response = rag_engine.invoke(normalized_query)
         answer = response["result"]
-        logging.info(f"Query response: {answer}")
+        sources = response["source_documents"]
+        latency = (datetime.now() - start_time).total_seconds()
+        logger.info(f"Query response: {answer}")
+        logger.debug(f"Retrieved documents: {[doc.page_content for doc in sources]}")
+        logger.info(f"Query execution time: {latency} seconds")
+        # Log performance metrics
+        logger.info(json.dumps({
+            "query": query,
+            "normalized_query": normalized_query,
+            "latency": latency,
+            "num_documents_retrieved": len(sources)
+        }))
         return answer
     except Exception as e:
-        logging.error(f"Error processing query: {e}")
+        logger.error(f"Error processing query: {e}")
         return f"Error: {e}"
 
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: python rag_engine.py '<your question>'")
-        sys.exit(1)
-    query = sys.argv[1]
-    answer = process_query(query)
-    print(answer)
+# WebSocket server for Node.js integration
+async def websocket_handler(websocket, path):
+    try:
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                query = data.get("query")
+                if not query:
+                    await websocket.send(json.dumps({"error": "No query provided"}))
+                    continue
+                logger.info(f"Received WebSocket query: {query}")
+                answer = process_query(query)
+                await websocket.send(json.dumps({"answer": answer}))
+                logger.info(f"Sent WebSocket response: {answer}")
+            except json.JSONDecodeError:
+                logger.error("Invalid JSON received in WebSocket message")
+                await websocket.send(json.dumps({"error": "Invalid JSON format"}))
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        await websocket.send(json.dumps({"error": str(e)}))
+
+def start_websocket_server():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    server = websockets.serve(websocket_handler, "localhost", 8765)
+    logger.info("Starting WebSocket server on ws://localhost:8765")
+    loop.run_until_complete(server)
+    loop.run_forever()
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="RAG Engine for Face Recognition Hackathon")
+    parser.add_argument("--query", help="Run a single query")
+    parser.add_argument("--websocket", action="store_true", help="Start WebSocket server")
+    args = parser.parse_args()
+
+    if args.websocket:
+        start_websocket_server()
+    elif args.query:
+        answer = process_query(args.query)
+        print(answer)
+    else:
+        print("Usage: python rag_engine.py --query '<your question>' or --websocket")
