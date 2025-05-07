@@ -56,7 +56,7 @@ const ChatTab = () => {
 
   return (
     <div className="p-4 bg-gray-100 rounded-xl shadow">
-      <h2 className="text-xl font-semibold mb-4">Chat with AI</h2>
+      <h2 className="text-xl font-semibold mb-4">Chat with Cortex</h2>
       <div className="chat-box border p-4 h-96 overflow-y-auto mb-4 bg-white rounded-xl">
         {chatHistory.map((chat, index) => (
           <div
