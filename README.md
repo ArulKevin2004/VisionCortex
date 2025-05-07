@@ -165,7 +165,7 @@ Install required libraries:
   ![image](https://github.com/user-attachments/assets/d00845bd-d004-45b1-8618-2154ef3936b2)
 
 ## Demo Video
- - A walkthrough of the platform, demonstrating registration, recognition, and chat queries, is available at:
+ - A walkthrough of the platform, demonstrating registration, recognition, and chat queries, is available at: https://www.loom.com/share/9efefd186a6846af82b91012ff0d5396?sid=0a3f59f9-c67d-432b-ba67-4e25685d2fff
 
 ## Acknowledgments
 This project is a part of a hackathon run by https://katomaran.com.
