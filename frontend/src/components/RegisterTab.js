@@ -32,19 +32,19 @@ const RegisterTab = () => {
   };
 
   return (
-    <div className="p-4 bg-gray-100 rounded shadow">
+    <div className="p-4 bg-gray-100 rounded-xl shadow">
       <h2 className="text-xl font-semibold mb-4">Register Face</h2>
       <input
         type="text"
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Enter name"
-        className="border p-2 mb-4 w-full"
+        className="border p-2 mb-4 w-full rounded-lg"
       />
       <button
         onClick={handleRegister}
         disabled={loading}
-        className={`bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+        className={`bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
         {loading ? 'Registering...' : 'Register'}
       </button>

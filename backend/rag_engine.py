@@ -1,7 +1,14 @@
-import sqlite3
 import os
-import json
+import sys
 import logging
+import pickle
+import json
+import sqlite3
+import argparse
+import asyncio
+import websockets
+import string
+import warnings
 from datetime import datetime
 from dotenv import load_dotenv
 from langchain.prompts import PromptTemplate
@@ -10,28 +17,28 @@ from langchain.docstore.document import Document
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
-import pickle
-import asyncio
-import websockets
-import sys
-import string
-import warnings
 from transformers import logging as transformers_logging
 
 # Suppress transformers warning
 transformers_logging.set_verbosity_error()
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers.tokenization_utils_base")
 
-# Set up logging
+# Set up logging to file and console
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
-logging.basicConfig(
-    filename=os.path.join(log_dir, "rag_engine.log"),
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='a'
-)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# File handler
+file_handler = logging.FileHandler(os.path.join(log_dir, "rag_engine.log"))
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 # Load environment variables
 load_dotenv()
@@ -144,7 +151,7 @@ def build_vector_store(documents):
         return vectorstore
     except Exception as e:
         logger.error(f"Error building FAISS vector store: {e}")
-        print(f" MojoException: Error building FAISS vector store: {e}")
+        print(f"MojoException: Error building FAISS vector store: {e}")
         sys.exit(1)
 
 # Normalize query
@@ -227,8 +234,8 @@ def process_query(query):
         logger.error(f"Error processing query: {e}")
         return f"Error: {e}"
 
-# WebSocket server for Node.js integration
-async def websocket_handler(websocket, path):
+# WebSocket handler
+async def websocket_handler(websocket):
     try:
         async for message in websocket:
             try:
@@ -248,23 +255,24 @@ async def websocket_handler(websocket, path):
         logger.error(f"WebSocket error: {e}")
         await websocket.send(json.dumps({"error": str(e)}))
 
-def start_websocket_server():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    server = websockets.serve(websocket_handler, "localhost", 8765)
+# Start WebSocket server
+async def main():
+    server = await websockets.serve(websocket_handler, "localhost", 8765)
     logger.info("Starting WebSocket server on ws://localhost:8765")
-    loop.run_until_complete(server)
-    loop.run_forever()
+    await server.wait_closed()
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser(description="RAG Engine for Face Recognition Hackathon")
     parser.add_argument("--query", help="Run a single query")
     parser.add_argument("--websocket", action="store_true", help="Start WebSocket server")
     args = parser.parse_args()
 
     if args.websocket:
-        start_websocket_server()
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("WebSocket server stopped")
+            sys.exit(0)
     elif args.query:
         answer = process_query(args.query)
         print(answer)

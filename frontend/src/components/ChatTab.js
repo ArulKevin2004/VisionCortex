@@ -6,10 +6,9 @@ let chatHistoryStorage = [];
 const ChatTab = () => {
   const [ws, setWs] = useState(null);
   const [message, setMessage] = useState('');
-  const [chatHistory, setChatHistory] = useState(chatHistoryStorage); // Initialize with persisted history
+  const [chatHistory, setChatHistory] = useState(chatHistoryStorage);
   const [error, setError] = useState('');
 
-  // Initialize WebSocket connection
   useEffect(() => {
     const websocket = new WebSocket('ws://localhost:5001');
     
@@ -56,16 +55,16 @@ const ChatTab = () => {
   };
 
   return (
-    <div className="p-4 bg-gray-100 rounded shadow">
+    <div className="p-4 bg-gray-100 rounded-xl shadow">
       <h2 className="text-xl font-semibold mb-4">Chat with AI</h2>
-      <div className="chat-box border p-4 h-64 overflow-y-auto mb-4 bg-white rounded">
+      <div className="chat-box border p-4 h-96 overflow-y-auto mb-4 bg-white rounded-xl">
         {chatHistory.map((chat, index) => (
           <div
             key={index}
             className={`mb-2 ${chat.type === 'sent' ? 'text-right' : 'text-left'}`}
           >
             <span
-              className={`inline-block p-2 rounded ${
+              className={`inline-block p-2 rounded-lg ${
                 chat.type === 'sent' ? 'bg-blue-500 text-white' : 'bg-gray-300'
               }`}
             >
@@ -81,12 +80,12 @@ const ChatTab = () => {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="Ask a question (e.g., How many people are registered?)"
-          className="border p-2 flex-1 rounded"
+          className="border p-2 flex-1 rounded-lg"
           onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
         />
         <button
           onClick={handleSendMessage}
-          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+          className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600"
         >
           Send
         </button>

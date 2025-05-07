@@ -102,44 +102,61 @@ app.get('/api/recognize', (req, res) => {
     });
 });
 
-// API to handle chat queries
-app.post('/api/chat', (req, res) => {
-    const { message } = req.body;
-    if (!message) {
-        return res.status(400).json({ error: 'Message is required' });
-    }
-    console.log('Calling rag_engine.py with message:', message);
+//API for chat 
+// app.post('/api/chat', (req, res) => {
+//     const { message } = req.body;
+//     if (!message) {
+//         return res.status(400).json({ error: 'Message is required' });
+//     }
+//     console.log('Calling rag_engine.py with message:', message);
 
-    const scriptPath = path.resolve(backendPath, 'rag_engine.py');
-    const child = spawn(pythonPath, [scriptPath, '--query', message], { cwd: backendPath, env: pythonEnv });
+//     const scriptPath = path.resolve(backendPath, 'rag_engine.py');
+//     const child = spawn(pythonPath, [scriptPath, '--query', message], { cwd: backendPath, env: pythonEnv });
 
-    let output = '';
-    let errorOutput = '';
+//     let output = '';
+//     let errorOutput = '';
 
-    child.stdout.on('data', (data) => {
-        output += data.toString();
-        console.log('Python output:', data.toString());
+//     child.stdout.on('data', (data) => {
+//         output += data.toString();
+//         console.log('Python output:', data.toString());
+//     });
+
+//     child.stderr.on('data', (data) => {
+//         errorOutput += data.toString();
+//         console.error('Python stderr:', data.toString());
+//     });
+
+//     child.on('error', (err) => {
+//         console.error('Spawn error:', err);
+//         return res.status(500).json({ error: 'Chat query failed: ' + err.message });
+//     });
+
+//     child.on('close', (code) => {
+//         if (res.headersSent) return; // Prevent sending multiple responses
+//         if (code === 0) {
+//             res.json({ message: output.trim() });
+//         } else {
+//             res.status(500).json({ error: `Chat query failed with code ${code}: ${errorOutput}` });
+//         }
+//     });
+// });
+
+// WebSocket client for rag_engine.py
+let chatWs = null;
+
+// Connect to rag_engine.py WebSocket server
+const connectToChat = () => {
+    chatWs = new WebSocket('ws://localhost:8765');
+    chatWs.on('open', () => console.log('Connected to rag_engine.py WebSocket server'));
+    chatWs.on('error', (error) => console.error('Chat WebSocket error:', error));
+    chatWs.on('close', () => {
+        console.log('Disconnected from rag_engine.py WebSocket server. Reconnecting...');
+        setTimeout(connectToChat, 5000);
     });
+};
 
-    child.stderr.on('data', (data) => {
-        errorOutput += data.toString();
-        console.error('Python stderr:', data.toString());
-    });
-
-    child.on('error', (err) => {
-        console.error('Spawn error:', err);
-        return res.status(500).json({ error: 'Chat query failed: ' + err.message });
-    });
-
-    child.on('close', (code) => {
-        if (res.headersSent) return; // Prevent sending multiple responses
-        if (code === 0) {
-            res.json({ message: output.trim() });
-        } else {
-            res.status(500).json({ error: `Chat query failed with code ${code}: ${errorOutput}` });
-        }
-    });
-});
+// Initial connection
+connectToChat();
 
 // Create HTTP server and WebSocket server
 const server = app.listen(5001, () => {
@@ -148,6 +165,7 @@ const server = app.listen(5001, () => {
 
 const wss = new WebSocket.Server({ server });
 
+// Handle WebSocket connections from the frontend
 wss.on('connection', (ws) => {
     console.log('WebSocket client connected');
 
@@ -155,40 +173,30 @@ wss.on('connection', (ws) => {
         const query = message.toString();
         console.log('Received WebSocket message:', query);
 
-        try {
-            const scriptPath = path.resolve(backendPath, 'rag_engine.py');
-            const child = spawn(pythonPath, [scriptPath, '--query', query], { cwd: backendPath, env: pythonEnv });
-
-            let output = '';
-            let errorOutput = '';
-
-            child.stdout.on('data', (data) => {
-                output += data.toString();
-                console.log('Python output:', data.toString());
-            });
-
-            child.stderr.on('data', (data) => {
-                errorOutput += data.toString();
-                console.error('Python stderr:', data.toString());
-            });
-
-            child.on('error', (err) => {
-                console.error('Spawn error:', err);
-                ws.send(JSON.stringify({ error: 'Chat query failed: ' + err.message }));
-            });
-
-            child.on('close', (code) => {
-                if (code === 0) {
-                    ws.send(JSON.stringify({ message: output.trim() }));
-                } else {
-                    console.error('Python error:', errorOutput);
-                    ws.send(JSON.stringify({ error: `Chat query failed with code ${code}: ${errorOutput}` }));
-                }
-            });
-        } catch (error) {
-            console.error('WebSocket error:', error);
-            ws.send(JSON.stringify({ error: 'Internal server error' }));
+        if (!chatWs || chatWs.readyState !== WebSocket.OPEN) {
+            ws.send(JSON.stringify({ error: 'Chat WebSocket server is not available' }));
+            return;
         }
+
+        chatWs.send(JSON.stringify({ query }));
+
+        const messageHandler = (response) => {
+            try {
+                const data = JSON.parse(response);
+                if (data.answer) {
+                    ws.send(JSON.stringify({ message: data.answer }));
+                } else if (data.error) {
+                    ws.send(JSON.stringify({ error: data.error }));
+                } else {
+                    ws.send(JSON.stringify({ error: 'Invalid response from chat server' }));
+                }
+            } catch (e) {
+                ws.send(JSON.stringify({ error: 'Invalid response from chat server' }));
+            }
+            chatWs.removeListener('message', messageHandler);
+        };
+
+        chatWs.on('message', messageHandler);
     });
 
     ws.on('close', () => {
